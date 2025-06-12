@@ -5,7 +5,7 @@ import tarfile
 import tempfile
 import os
 import re
-import random
+import csv
 
 retries = 3
 
@@ -49,11 +49,36 @@ def download_and_extract_tex(arxiv_id):
         return tex_contents if tex_contents else None
 
 def count_symbols(tex_data):
-    greater_than = tex_data.count(">")
-    less_than = tex_data.count("<")
-    return greater_than, less_than
+    # Raw symbols
+    gt = tex_data.count(">")
+    lt = tex_data.count("<")
 
-def compare_symbols_on_random_math_papers(n=5):
+    # LaTeX inequality commands
+    leq = len(re.findall(r'\\leq\b', tex_data))
+    geq = len(re.findall(r'\\geq\b', tex_data))
+    lt_cmd = len(re.findall(r'\\lt\b', tex_data))
+    gt_cmd = len(re.findall(r'\\gt\b', tex_data))
+    ll = len(re.findall(r'\\ll\b', tex_data))
+    gg = len(re.findall(r'\\gg\b', tex_data))
+
+    total_gt = gt + geq + gt_cmd + gg
+    total_lt = lt + leq + lt_cmd + ll
+
+    return {
+        'raw >': gt,
+        'raw <': lt,
+        '\\geq': geq,
+        '\\leq': leq,
+        '\\gt': gt_cmd,
+        '\\lt': lt_cmd,
+        '\\gg': gg,
+        '\\ll': ll,
+        'total >-like': total_gt,
+        'total <-like': total_lt
+    }
+
+
+def compare_symbols_on_random_math_papers(n=5, csv_filename="inequality_counts.csv", verbose_output=False):
     client = arxiv.Client()
     search = arxiv.Search(
         query="cat:math*",
@@ -62,26 +87,60 @@ def compare_symbols_on_random_math_papers(n=5):
     )
 
     papers = list(client.results(search))
-    random.shuffle(papers)
+    Running_total = {
+        'total >-like': 0,
+        'total <-like': 0 
+    }
+    rows = []
 
     for paper in papers[:n]:
         print(f"Analyzing: {paper.title} ({paper.entry_id})")
         arxiv_id = paper.entry_id.split('/')[-1]
         tex = download_and_extract_tex(arxiv_id)
         if tex:
-            gt, lt = count_symbols(tex)
-            print(f"  > : {gt} times")
-            print(f"  < : {lt} times")
-            if gt > lt:
-                print("  More '>' symbols")
-            elif lt > gt:
-                print("  More '<' symbols")
-            else:
-                print("  Equal number of '>' and '<'")
+            symbols = count_symbols(tex)
+
+            if verbose_output:
+                for k, v in symbols.items():
+                    print(f"  {k}: {v}")
+                if symbols['total >-like'] > symbols['total <-like']:
+                    print("  ➤ More >-like symbols (including LaTeX)")
+                elif symbols['total >-like'] < symbols['total <-like']:
+                    print("  ➤ More <-like symbols (including LaTeX)")
+                else:
+                    print("  ➤ Equal number of > and < symbols (including LaTeX)")
+
+            Running_total['total <-like'] += symbols['total <-like']
+            Running_total['total >-like'] += symbols['total >-like']
+            result = {
+                'arxiv_id': arxiv_id,
+                'title': paper.title,
+                **symbols
+            }
+            rows.append(result)
+
         else:
             print("  ✘ Could not extract LaTeX source")
         print('-' * 60)
-        time.sleep(1)
+
+    print()
+    if Running_total['total >-like'] > Running_total['total <-like']:
+        print("  ➤ More >-like symbols (including LaTeX)")
+    elif Running_total['total >-like'] < Running_total['total <-like']:
+        print("  ➤ More <-like symbols (including LaTeX)")
+    else:
+        print("  ➤ Equal number of > and < symbols (including LaTeX)")
+
+    print(Running_total)
+
+    # Write to CSV
+    fieldnames = ['arxiv_id', 'title'] + list(symbols.keys())
+    with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"\n✅ Saved results to: {csv_filename}")
 
 if __name__ == "__main__":
     compare_symbols_on_random_math_papers(n=3)
